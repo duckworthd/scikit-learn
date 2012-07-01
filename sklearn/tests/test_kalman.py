@@ -3,7 +3,7 @@ from numpy.testing import assert_almost_equal
 
 from nose.tools import assert_true
 
-from ..kalman import KalmanFilter
+from ..kalman import KalmanFilter, UnscentedKalmanFilter
 from sklearn.datasets import load_kalman_data
 
 data = load_kalman_data()
@@ -68,8 +68,10 @@ def test_kalman_filter():
 
     (x_filt, V_filt, ll) = kf.filter(X=data.data)
     for t in range(500):
-        assert_true(np.linalg.norm(x_filt[t] - data.filtered_state_means[t]) < 1e-3)
-        assert_true(np.linalg.norm(V_filt[t] - data.filtered_state_covariances[t]) < 1e-3)
+        assert_true(np.linalg.norm(x_filt[t] -  \
+            data.filtered_state_means[t]) < 1e-3)
+        assert_true(np.linalg.norm(V_filt[t] -  \
+            data.filtered_state_covariances[t]) < 1e-3)
 
 
 def test_kalman_predict():
@@ -85,7 +87,8 @@ def test_kalman_predict():
 
     x_smooth = kf.predict(X=data.data)
     for t in reversed(range(501)):
-        assert_true(np.linalg.norm(x_smooth[t] - data.smoothed_state_means[t]) < 1e-3)
+        assert_true(np.linalg.norm(x_smooth[t] -  \
+            data.smoothed_state_means[t]) < 1e-3)
 
 
 def test_kalman_fit():
@@ -93,7 +96,7 @@ def test_kalman_fit():
     kf = KalmanFilter(
         data.transition_matrix,
         data.observation_matrix,
-        data.initial_transition_covariance, 
+        data.initial_transition_covariance,
         data.initial_observation_covariance,
         data.transition_offsets,
         data.observation_offset,
@@ -116,3 +119,55 @@ def test_kalman_fit():
         scores[i] = np.sum(kf.filter(X=data.data[0:T])[-1])
     for i in range(len(scores) - 1):
         assert_true(scores[i] < scores[i + 1])
+
+
+def build_unscented_filter():
+    # build transition functions
+    A = np.array([[1, 1], [0, 1]])
+    C = np.array([[0.5, -0.3]])
+    f = lambda x: A.dot(x)
+    g = lambda x: C.dot(x)
+
+    x = np.array([1, 1])
+    P = np.array([[1, 0.1], [0.1, 1]])
+
+    Q = np.eye(2) * 2
+    R = 0.5
+
+    # build filter
+    kf = UnscentedKalmanFilter(f, g, Q, R, x, P, random_state=0)
+
+    return kf
+
+
+def test_unscented_sample():
+    kf = build_unscented_filter()
+    (x, z) = kf.sample(100)
+
+    assert_true(x.shape == (100, 2))
+    assert_true(z.shape == (100, 1))
+
+
+def test_unscented_filter():
+    kf = build_unscented_filter()
+
+    Z = np.array([1, 2, 3])
+    (mu_filt, sigma_filt) = kf.filter(Z)
+
+    # true unscented mean, covariance, as calculated by a MATLAB tool
+    mu_true = np.zeros((3, 2), dtype=float)
+    mu_true[0] = [2.28518518514932, 1.09259259256202]
+    mu_true[1] = [4.50491363401856, 1.48437587344772]
+    mu_true[2] = [6.91285124118152, 1.84648139654954]
+
+    sigma_true = np.zeros((3, 2, 2), dtype=float)
+    sigma_true[0] = [[3.46802469135795, 0.862345679012293],
+                     [0.862345679012293, 2.92283950617283]]
+    sigma_true[1] = [[4.96013416065761, 1.99320252669258],
+                     [1.99320252669258, 4.2999608698084]]
+    sigma_true[2] = [[5.54236591104705, 2.48841439900969],
+                     [2.48841439900969, 4.80821367463056]]
+
+    for t in range(mu_true.shape[0]):
+        assert_almost_equal(mu_true[t], mu_filt[t])
+        assert_almost_equal(sigma_true[t], sigma_filt[t])
