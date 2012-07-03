@@ -11,7 +11,7 @@ from numpy import ma
 from scipy import linalg
 
 from ..base import BaseEstimator
-from ..utils import array1d, array2d, atleast2d_or_csr, check_random_state
+from ..utils import array1d, array2d, check_random_state
 
 from .standard import _last_dims
 
@@ -69,22 +69,22 @@ def _sigma_points(mu, sigma, alpha=1e-3, beta=2.0, kappa=0.0):
     return (points.T, weights_mean, weights_cov)
 
 
-def _unscented_transform(f, points, weights_mean, weights_cov, Q):
+def _unscented_transform(f, points, points_noise, weights_mean, weights_cov):
     '''
     Apply the Unscented Transform.
 
     Parameters
     ==========
-    f : [n_dim_1] -> [n_dim_2] function
+    f : [n_dim_1, n_dim_3] -> [n_dim_2] function
         function to apply pass all points through
     points : [n_points, n_dim_1] array
-        points to pass through `f`
+        points representing state to pass through `f`
+    points_noise : [n_points, n_dim_3] array
+        points representing noise to pass through `f`
     weights_mean : [n_points] array
         weights used to calculate the empirical mean
     weights_cov : [n_points] array
         weights used to calculate empirical covariance
-    Q : [n_dim_2, n_dim_2] array
-        covariance matrix for additive noise to f
 
     Returns
     =======
@@ -98,12 +98,14 @@ def _unscented_transform(f, points, weights_mean, weights_cov, Q):
     n_points, n_dim_state = points.shape
 
     # propagate points through f.  Each column is a sample point
-    points_pred = np.vstack([f(points[i]) for i in range(n_points)]).T
+    points_pred = np.vstack(
+        [f(points[i], points_noise[i]) for i in range(n_points)]
+    ).T
 
     # calculate approximate mean, covariance
     mu_pred = points_pred.dot(weights_mean)
     points_diff = points_pred - mu_pred[:, np.newaxis]
-    sigma_pred = points_diff.dot(np.diag(weights_cov)).dot(points_diff.T) + Q
+    sigma_pred = points_diff.dot(np.diag(weights_cov)).dot(points_diff.T)
 
     return (points_pred.T, mu_pred.ravel(), sigma_pred)
 
@@ -111,7 +113,7 @@ def _unscented_transform(f, points, weights_mean, weights_cov, Q):
 def _unscented_correct(cross_sigma, mu_pred, sigma_pred, obs_mu_pred,
                        obs_sigma_pred, z):
     '''
-    Apply the Kalman Filter correction step
+    Correct predicted state estimates with an observation
     '''
     n_dim_state = len(mu_pred)
     n_dim_obs = len(obs_mu_pred)
@@ -139,29 +141,50 @@ def _unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
     '''
     T = Z.shape[0]
     n_dim_state = Q.shape[0]
+    n_dim_obs = R.shape[0]
 
     mu_filt = np.zeros((T, n_dim_state))
     sigma_filt = np.zeros((T, n_dim_state, n_dim_state))
 
     for t in range(T):
-        # Calculate sigma points for P(x_{t-1} | z_{0:t-1})
+        # Calculate sigma points for augmented state:
+        #   [actual state, transition noise, observation noise]
         if t == 0:
-            (points, weights_mu, weights_sigma) =   \
-                _sigma_points(mu_0, sigma_0)
+            mu = mu_0
+            sigma = sigma_0
         else:
-            (points, weights_mu, weights_sigma) =   \
-                _sigma_points(mu_filt[t - 1], sigma_filt[t - 1])
+            mu = mu_filt[t - 1]
+            sigma = sigma_filt[t - 1]
+        mu_aug = np.concatenate(
+            [mu, np.zeros(n_dim_state), np.zeros(n_dim_obs)]
+        )
+        sigma_aug = np.zeros(
+            (2 * n_dim_state + n_dim_obs, 2 * n_dim_state + n_dim_obs),
+            dtype=float
+        )
+        sigma_aug[0:n_dim_state, 0:n_dim_state] = sigma
+        sigma_aug[n_dim_state:2 * n_dim_state, n_dim_state:2 * n_dim_state] = Q
+        sigma_aug[2 * n_dim_state:, 2 * n_dim_state:] = R
+        (points_aug, weights_mu, weights_sigma) =   \
+            _sigma_points(mu_aug, sigma_aug)
+
+        # extract components of points_aug dealing with state, transition
+        # noise, observation noise
+        points_state = points_aug[:, 0:n_dim_state]
+        points_trans = points_aug[:, n_dim_state:2 * n_dim_state]
+        points_obs = points_aug[:, 2 * n_dim_state:]
 
         # Calculate E[x_t | z_{0:t-1}], Var(x_t | z_{0:t-1})
         f_t = _last_dims(f, t, ndims=1)[0]
         (points_pred, mu_pred, sigma_pred) =  \
-            _unscented_transform(f_t, points, weights_mu, weights_sigma, Q)
+            _unscented_transform(f_t, points_state, points_trans,
+                                 weights_mu, weights_sigma)
 
         # Calculate E[z_t | z_{0:t-1}], Var(z_t | z_{0:t-1})
         g_t = _last_dims(g, t, ndims=1)[0]
         (obs_points_pred, obs_mu_pred, obs_sigma_pred) =  \
-            _unscented_transform(g_t, points_pred, weights_mu,
-                                 weights_sigma, R)
+            _unscented_transform(g_t, points_pred, points_obs,
+                                 weights_mu, weights_sigma)
 
         # Calculate Cov(x_t, z_t | z_{0:t-1})
         sigma_pair = ((points_pred - mu_pred).T).   \
@@ -182,10 +205,10 @@ class UnscentedKalmanFilter(BaseEstimator):
 
     .. math::
 
-        v_t       &\sim \text{Normal}(0, Q_t)
-        w_t       &\sim \text{Normal}(0, R_t)
-        x_{t+1}   &= f_t(x_t, v_t) \\
-        z_{t}     &= g(x_t, w_t)
+        v_t       &\sim \text{Normal}(0, Q)     \\
+        w_t       &\sim \text{Normal}(0, R)     \\
+        x_{t+1}   &= f_t(x_t) + v_t             \\
+        z_{t}     &= g_t(x_t) + w_t
     """
     def __init__(self, f, g, Q, R, mu_0, sigma_0, random_state=None):
         self.f = array1d(f)
@@ -219,25 +242,25 @@ class UnscentedKalmanFilter(BaseEstimator):
             else:
                 f_t1 = _last_dims(self.f, t - 1, ndims=1)[0]
                 Q_t1 = self.Q
-                x[t] = f_t1(x[t - 1]) \
-                    + rng.multivariate_normal(np.zeros(n_dim_state),
-                        Q_t1.newbyteorder('='))
+                e_t1 = rng.multivariate_normal(np.zeros(n_dim_state),
+                    Q_t1.newbyteorder('='))
+                x[t] = f_t1(x[t - 1], e_t1)
 
             g_t = _last_dims(self.g, t, ndims=1)[0]
             R_t = self.R
-            z[t] = g_t(x[t])  \
-                + rng.multivariate_normal(np.zeros(n_dim_obs),
-                    R_t.newbyteorder('='))
+            e_t2 = rng.multivariate_normal(np.zeros(n_dim_obs),
+                R_t.newbyteorder('='))
+            z[t] = g_t(x[t], e_t2)
 
         return (x, ma.asarray(z))
 
     def filter(self, Z):
-        Z = atleast2d_or_csr(Z)
+        Z = ma.asarray(Z)
 
         (mu_filt, sigma_filt) =   \
             _unscented_filter(self.mu_0, self.sigma_0, self.f, self.g, self.Q,
                               self.R, Z)
         return (mu_filt, sigma_filt)
 
-    def smooth(self):
-        pass
+    def predict(self, Z):
+        return self.filter(Z)[0]

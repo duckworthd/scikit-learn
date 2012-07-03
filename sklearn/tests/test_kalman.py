@@ -125,8 +125,8 @@ def build_unscented_filter():
     # build transition functions
     A = np.array([[1, 1], [0, 1]])
     C = np.array([[0.5, -0.3]])
-    f = lambda x: A.dot(x)
-    g = lambda x: C.dot(x)
+    f = lambda x, y: A.dot(x) + y
+    g = lambda x, y: C.dot(x) + y
 
     x = np.array([1, 1])
     P = np.array([[1, 0.1], [0.1, 1]])
@@ -154,19 +154,21 @@ def test_unscented_filter():
     Z = np.array([1, 2, 3])
     (mu_filt, sigma_filt) = kf.filter(Z)
 
-    # true unscented mean, covariance, as calculated by a MATLAB tool
+    # true unscented mean, covariance, as calculated by a MATLAB ukf_predict3
+    # and ukf_update3 available from
+    # http://becs.aalto.fi/en/research/bayes/ekfukf/
     mu_true = np.zeros((3, 2), dtype=float)
-    mu_true[0] = [2.28518518514932, 1.09259259256202]
-    mu_true[1] = [4.50491363401856, 1.48437587344772]
-    mu_true[2] = [6.91285124118152, 1.84648139654954]
+    mu_true[0] = [2.35637583900053, 0.92953020131845]
+    mu_true[1] = [4.39153258583784, 1.15148930114305]
+    mu_true[2] = [6.71906243764755, 1.52810614201467]
 
     sigma_true = np.zeros((3, 2, 2), dtype=float)
-    sigma_true[0] = [[3.46802469135795, 0.862345679012293],
-                     [0.862345679012293, 2.92283950617283]]
-    sigma_true[1] = [[4.96013416065761, 1.99320252669258],
-                     [1.99320252669258, 4.2999608698084]]
-    sigma_true[2] = [[5.54236591104705, 2.48841439900969],
-                     [2.48841439900969, 4.80821367463056]]
+    sigma_true[0] = [[2.09738255033564, 1.51577181208054],
+                     [1.51577181208054, 2.91778523489934]]
+    sigma_true[1] = [[3.62532578216913, 3.14443733560803],
+                     [3.14443733560803, 4.65898912348045]]
+    sigma_true[2] = [[4.3902465859811, 3.90194406652627],
+                     [3.90194406652627, 5.40957304471697]]
 
     for t in range(mu_true.shape[0]):
         assert_almost_equal(mu_true[t], mu_filt[t])
