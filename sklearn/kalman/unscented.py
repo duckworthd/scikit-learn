@@ -135,13 +135,13 @@ def _unscented_correct(cross_sigma, mu_pred, sigma_pred, obs_mu_pred,
     return (K, mu_filt, sigma_filt)
 
 
-def _unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
+def _augmented_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
     '''
-    Apply the Unscented Kalman Filter
+    Apply the Unscented Kalman Filter with arbitrary noise
     '''
     T = Z.shape[0]
-    n_dim_state = Q.shape[0]
-    n_dim_obs = R.shape[0]
+    n_dim_state = Q.shape[-1]
+    n_dim_obs = R.shape[-1]
 
     mu_filt = np.zeros((T, n_dim_state))
     sigma_filt = np.zeros((T, n_dim_state, n_dim_state))
@@ -185,6 +185,54 @@ def _unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
         (obs_points_pred, obs_mu_pred, obs_sigma_pred) =  \
             _unscented_transform(g_t, points_pred, points_obs,
                                  weights_mu, weights_sigma)
+
+        # Calculate Cov(x_t, z_t | z_{0:t-1})
+        sigma_pair = ((points_pred - mu_pred).T).   \
+            dot(np.diag(weights_sigma)).  \
+            dot(obs_points_pred - obs_mu_pred)
+
+        # Calculate E[x_t | z_{0:t}], Var(x_t | z_{0:t})
+        (_, mu_filt[t], sigma_filt[t]) =  \
+            _unscented_correct(sigma_pair, mu_pred, sigma_pred, obs_mu_pred,
+                               obs_sigma_pred, Z[t])
+
+    return (mu_filt, sigma_filt)
+
+
+def _additive_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
+    '''
+    Apply the Unscented Kalman Filter with additive noise
+    '''
+    T = Z.shape[0]
+    n_dim_state = Q.shape[0]
+
+    mu_filt = np.zeros((T, n_dim_state))
+    sigma_filt = np.zeros((T, n_dim_state, n_dim_state))
+
+    for t in range(T):
+        # Calculate sigma points for P(x_{t-1} | z_{0:t-1})
+        if t == 0:
+            (points, weights_mu, weights_sigma) =   \
+                _sigma_points(mu_0, sigma_0)
+        else:
+            (points, weights_mu, weights_sigma) =   \
+                _sigma_points(mu_filt[t - 1], sigma_filt[t - 1])
+
+        # Calculate E[x_t | z_{0:t-1}], Var(x_t | z_{0:t-1})
+        f_t = _last_dims(f, t, ndims=1)[0]
+        f_mock = lambda x, y: f_t(x)
+        (points_pred, mu_pred, sigma_pred) =  \
+            _unscented_transform(f_mock, points, points, weights_mu,
+                weights_sigma)
+        sigma_pred += Q
+
+        # Calculate E[z_t | z_{0:t-1}], Var(z_t | z_{0:t-1})
+        g_t = _last_dims(g, t, ndims=1)[0]
+        g_mock = lambda x, y: g_t(x)
+        (obs_points_pred, obs_mu_pred, obs_sigma_pred) =  \
+            _unscented_transform(g_mock, points_pred, points_pred, weights_mu,
+                weights_sigma)
+        obs_sigma_pred += R
 
         # Calculate Cov(x_t, z_t | z_{0:t-1})
         sigma_pair = ((points_pred - mu_pred).T).   \
@@ -258,8 +306,10 @@ class UnscentedKalmanFilter(BaseEstimator):
         Z = ma.asarray(Z)
 
         (mu_filt, sigma_filt) =   \
-            _unscented_filter(self.mu_0, self.sigma_0, self.f, self.g, self.Q,
-                              self.R, Z)
+            _augmented_unscented_filter(
+                self.mu_0, self.sigma_0, self.f,
+                self.g, self.Q, self.R, Z
+            )
         return (mu_filt, sigma_filt)
 
     def predict(self, Z):
