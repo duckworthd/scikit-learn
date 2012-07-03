@@ -16,6 +16,16 @@ from ..utils import array1d, array2d, check_random_state
 from .standard import _last_dims
 
 
+def _unscented_moments(points, weights_mu, weights_sigma):
+    '''
+    Calculate the weighted mean and covariance of `points`
+    '''
+    mu = points.T.dot(weights_mu)
+    points_diff = points.T - mu[:, np.newaxis]
+    sigma = points_diff.dot(np.diag(weights_sigma)).dot(points_diff.T)
+    return (mu.ravel(), sigma)
+
+
 def _sigma_points(mu, sigma, alpha=1e-3, beta=2.0, kappa=0.0):
     '''Calculate "sigma points" used in Unscented Kalman Filter
 
@@ -100,14 +110,13 @@ def _unscented_transform(f, points, points_noise, weights_mean, weights_cov):
     # propagate points through f.  Each column is a sample point
     points_pred = np.vstack(
         [f(points[i], points_noise[i]) for i in range(n_points)]
-    ).T
+    )
 
     # calculate approximate mean, covariance
-    mu_pred = points_pred.dot(weights_mean)
-    points_diff = points_pred - mu_pred[:, np.newaxis]
-    sigma_pred = points_diff.dot(np.diag(weights_cov)).dot(points_diff.T)
+    (mu_pred, sigma_pred) =   \
+        _unscented_moments(points_pred, weights_mean, weights_cov)
 
-    return (points_pred.T, mu_pred.ravel(), sigma_pred)
+    return (points_pred, mu_pred, sigma_pred)
 
 
 def _unscented_correct(cross_sigma, mu_pred, sigma_pred, obs_mu_pred,
@@ -127,7 +136,7 @@ def _unscented_correct(cross_sigma, mu_pred, sigma_pred, obs_mu_pred,
         sigma_filt = sigma_pred - K.dot(cross_sigma.T)
     else:
         # no Kalman gain
-        K = np.zeros(n_dim_state, n_dim_obs)
+        K = np.zeros((n_dim_state, n_dim_obs))
 
         # no corrections to be made
         mu_filt = mu_pred
@@ -165,6 +174,7 @@ def _augmented_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
         sigma_aug[0:n_dim_state, 0:n_dim_state] = sigma
         sigma_aug[n_dim_state:2 * n_dim_state, n_dim_state:2 * n_dim_state] = Q
         sigma_aug[2 * n_dim_state:, 2 * n_dim_state:] = R
+
         (points_aug, weights_mu, weights_sigma) =   \
             _sigma_points(mu_aug, sigma_aug)
 
@@ -175,10 +185,15 @@ def _augmented_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
         points_obs = points_aug[:, 2 * n_dim_state:]
 
         # Calculate E[x_t | z_{0:t-1}], Var(x_t | z_{0:t-1})
-        f_t = _last_dims(f, t, ndims=1)[0]
-        (points_pred, mu_pred, sigma_pred) =  \
-            _unscented_transform(f_t, points_state, points_trans,
-                                 weights_mu, weights_sigma)
+        if t == 0:
+            points_pred = points_state
+            (mu_pred, sigma_pred) =   \
+                _unscented_moments(points_pred, weights_mu, weights_sigma)
+        else:
+            f_t1 = _last_dims(f, t - 1, ndims=1)[0]
+            (points_pred, mu_pred, sigma_pred) =  \
+                _unscented_transform(f_t1, points_state, points_trans,
+                                     weights_mu, weights_sigma)
 
         # Calculate E[z_t | z_{0:t-1}], Var(z_t | z_{0:t-1})
         g_t = _last_dims(g, t, ndims=1)[0]
@@ -212,26 +227,33 @@ def _additive_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
     for t in range(T):
         # Calculate sigma points for P(x_{t-1} | z_{0:t-1})
         if t == 0:
-            (points, weights_mu, weights_sigma) =   \
-                _sigma_points(mu_0, sigma_0)
+            mu = mu_0
+            sigma = sigma_0
         else:
-            (points, weights_mu, weights_sigma) =   \
-                _sigma_points(mu_filt[t - 1], sigma_filt[t - 1])
+            mu = mu_filt[t - 1]
+            sigma = sigma_filt[t - 1]
+        (points, weights_mu, weights_sigma) =   \
+            _sigma_points(mu, sigma)
 
         # Calculate E[x_t | z_{0:t-1}], Var(x_t | z_{0:t-1})
-        f_t = _last_dims(f, t, ndims=1)[0]
-        f_mock = lambda x, y: f_t(x)
-        (points_pred, mu_pred, sigma_pred) =  \
-            _unscented_transform(f_mock, points, points, weights_mu,
-                weights_sigma)
-        sigma_pred += Q
+        if t == 0:
+            points_pred = points_state
+            (mu_pred, sigma_pred) =   \
+                _unscented_moments(points_pred, weights_mu, weights_sigma)
+        else:
+            f_t1 = _last_dims(f, t - 1, ndims=1)[0]
+            f_mock = lambda x, y: f_t1(x)
+            (points_pred, mu_pred, sigma_pred) =  \
+                _unscented_transform(f_t1, points, points,
+                                     weights_mu, weights_sigma)
+            sigma_pred += Q
 
         # Calculate E[z_t | z_{0:t-1}], Var(z_t | z_{0:t-1})
         g_t = _last_dims(g, t, ndims=1)[0]
         g_mock = lambda x, y: g_t(x)
         (obs_points_pred, obs_mu_pred, obs_sigma_pred) =  \
-            _unscented_transform(g_mock, points_pred, points_pred, weights_mu,
-                weights_sigma)
+            _unscented_transform(g_mock, points_pred, points_pred,
+                                 weights_mu, weights_sigma)
         obs_sigma_pred += R
 
         # Calculate Cov(x_t, z_t | z_{0:t-1})

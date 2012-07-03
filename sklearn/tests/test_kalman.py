@@ -1,4 +1,5 @@
 import numpy as np
+from numpy import ma
 from numpy.testing import assert_almost_equal
 
 from nose.tools import assert_true
@@ -151,8 +152,9 @@ def test_unscented_sample():
 def test_unscented_filter():
     kf = build_unscented_filter()
 
-    Z = np.array([1, 2, 3])
+    Z = ma.array([0, 1, 2, 3], mask=[True, False, False, False])
     (mu_filt, sigma_filt) = kf.filter(Z)
+    mu_filt, sigma_filt = mu_filt[1:], sigma_filt[1:]
 
     # true unscented mean, covariance, as calculated by a MATLAB ukf_predict3
     # and ukf_update3 available from
