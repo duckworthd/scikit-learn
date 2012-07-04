@@ -269,16 +269,28 @@ def _additive_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
     return (mu_filt, sigma_filt)
 
 
-class UnscentedKalmanFilter(BaseEstimator):
+class GeneralUnscentedKalmanFilter(BaseEstimator):
     """
-    Implements the Unscented Kalman Filter governed by the following equations,
+    Implements the General (aka Augmented) Unscented Kalman Filter governed by
+    the following equations,
 
     .. math::
 
         v_t       &\sim \text{Normal}(0, Q)     \\
         w_t       &\sim \text{Normal}(0, R)     \\
-        x_{t+1}   &= f_t(x_t) + v_t             \\
-        z_{t}     &= g_t(x_t) + w_t
+        x_{t+1}   &= f_t(x_t, v_t)              \\
+        z_{t}     &= g_t(x_t, w_t)
+
+    Notice that although the input noise to the state transition equation and
+    the observation equation are both normally distributed, but any non-linear
+    transformation may be applied afterwards.  This allows for greater
+    generality, but at the expense of computational complexity.  The complexity
+    of `GeneralUnscentedKalmanFilter.filter()`is :math:`O(T(2n+m))` where :math:`T` is
+    the number of time steps, :math:`n` is the size of the state space, and
+    :math:`m` is the size of the observation space.
+
+    If your noise is simply additive, consider using the
+    `AdditiveUnscentedKalmanFilter`
     """
     def __init__(self, f, g, Q, R, mu_0, sigma_0, random_state=None):
         self.f = array1d(f)
