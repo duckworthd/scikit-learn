@@ -150,15 +150,17 @@ def _augment(means, covariances):
     sigma_aug = linalg.block_diag(*covariances)
     return (mu_aug, sigma_aug)
 
+
 def _extract_augmented_points(points, dims):
     """Extract unaugmented portion of augmented sigma points"""
     result = []
     start = 0
     for d in dims:
-      stop = start + d
-      result.append(points[:, start:stop])
-      start = stop
+        stop = start + d
+        result.append(points[:, start:stop])
+        start = stop
     return result
+
 
 def _augmented_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
     '''
@@ -235,7 +237,7 @@ def _augmented_unscented_smoother(mu_filt, sigma_filt, f, Q):
     sigma_smooth = np.zeros(sigma_filt.shape)
     mu_smooth[-1], sigma_smooth[-1] = mu_filt[-1], sigma_filt[-1]
 
-    for t in reversed(range(T-1)):
+    for t in reversed(range(T - 1)):
         # get sigma points for [state, transition noise]
         mu = mu_filt[t]
         sigma = sigma_filt[t]
@@ -262,8 +264,17 @@ def _augmented_unscented_smoother(mu_filt, sigma_filt, f, Q):
 
         # compute smoothed mean, covariance
         smoother_gain = sigma_pair.dot(linalg.pinv(sigma_pred))
-        mu_smooth[t] = mu_filt[t] + smoother_gain.dot(mu_smooth[t+1] - mu_pred)
-        sigma_smooth[t] = sigma_filt[t] + smoother_gain.dot(sigma_smooth[t+1] - sigma_pred).dot(smoother_gain.T)
+        mu_smooth[t] = (
+            mu_filt[t]
+            + smoother_gain
+              .dot(mu_smooth[t + 1] - mu_pred)
+        )
+        sigma_smooth[t] = (
+            sigma_filt[t]
+            + smoother_gain
+              .dot(sigma_smooth[t + 1] - sigma_pred)
+              .dot(smoother_gain.T)
+        )
 
     return (mu_smooth, sigma_smooth)
 
@@ -286,7 +297,7 @@ def _additive_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
         else:
             mu = mu_filt[t - 1]
             sigma = sigma_filt[t - 1]
-        (points, weights_mu, weights_sigma) = _sigma_points(mu, sigma)
+        (points_state, weights_mu, weights_sigma) = _sigma_points(mu, sigma)
 
         # Calculate E[x_t | z_{0:t-1}], Var(x_t | z_{0:t-1})
         if t == 0:
@@ -297,11 +308,12 @@ def _additive_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
         else:
             f_t1 = _last_dims(f, t - 1, ndims=1)[0]
             f_mock = lambda x, y: f_t1(x)
-            (points_pred, mu_pred, sigma_pred) = (
-                _unscented_transform(f_t1, points, points,
+            (_, mu_pred, sigma_pred) = (
+                _unscented_transform(f_mock, points_state, points_state,
                                      weights_mu, weights_sigma)
             )
             sigma_pred += Q
+            points_pred = _sigma_points(mu_pred, sigma_pred)[0]
 
         # Calculate E[z_t | z_{0:t-1}], Var(z_t | z_{0:t-1})
         g_t = _last_dims(g, t, ndims=1)[0]
@@ -325,6 +337,49 @@ def _additive_unscented_filter(mu_0, sigma_0, f, g, Q, R, Z):
     return (mu_filt, sigma_filt)
 
 
+def _additive_unscented_smoother(mu_filt, sigma_filt, f, Q):
+    T, n_dim_state = mu_filt.shape
+
+    mu_smooth = np.zeros(mu_filt.shape)
+    sigma_smooth = np.zeros(sigma_filt.shape)
+    mu_smooth[-1], sigma_smooth[-1] = mu_filt[-1], sigma_filt[-1]
+
+    for t in reversed(range(T - 1)):
+        # get sigma points for state
+        mu = mu_filt[t]
+        sigma = sigma_filt[t]
+
+        (points_state, weights_mu, weights_sigma) = (
+            _sigma_points(mu, sigma)
+        )
+
+        # compute mean, covariance, pairwise cov between time t+1 and t
+        f_t1 = _last_dims(f, t - 1, ndims=1)[0]
+        f_mock = lambda x, y: f_t1(x)
+        (points_pred, mu_pred, sigma_pred) =  \
+            _unscented_transform(f_mock, points_state, points_state,
+                                 weights_mu, weights_sigma)
+        sigma_pair = ((points_pred - mu_pred).T).   \
+            dot(np.diag(weights_sigma)).  \
+            dot(points_state - mu).T
+
+        # compute smoothed mean, covariance
+        smoother_gain = sigma_pair.dot(linalg.pinv(sigma_pred))
+        mu_smooth[t] = (
+            mu_filt[t]
+            + smoother_gain
+              .dot(mu_smooth[t + 1] - mu_pred)
+        )
+        sigma_smooth[t] = (
+            sigma_filt[t]
+            + smoother_gain
+              .dot(sigma_smooth[t + 1] - sigma_pred)
+              .dot(smoother_gain.T)
+        )
+
+    return (mu_smooth, sigma_smooth)
+
+
 class UnscentedKalmanFilter(BaseEstimator):
     """
     Implements the General (aka Augmented) Unscented Kalman Filter governed by
@@ -341,9 +396,9 @@ class UnscentedKalmanFilter(BaseEstimator):
     the observation equation are both normally distributed, but any non-linear
     transformation may be applied afterwards.  This allows for greater
     generality, but at the expense of computational complexity.  The complexity
-    of `GeneralUnscentedKalmanFilter.filter()`is :math:`O(T(2n+m))` where :math:`T` is
-    the number of time steps, :math:`n` is the size of the state space, and
-    :math:`m` is the size of the observation space.
+    of `GeneralUnscentedKalmanFilter.filter()`is :math:`O(T(2n+m))` where
+    :math:`T` is the number of time steps, :math:`n` is the size of the state
+    space, and :math:`m` is the size of the observation space.
 
     If your noise is simply additive, consider using the
     `AdditiveUnscentedKalmanFilter`
@@ -357,15 +412,12 @@ class UnscentedKalmanFilter(BaseEstimator):
         self.sigma_0 = array2d(sigma_0)
         self.random_state = random_state
 
-    def sample(self, T, x_0=None, random_state=None):
+    def sample(self, T, x_0=None):
         n_dim_state = self.Q.shape[-1]
         n_dim_obs = self.R.shape[-1]
 
         # logic for instantiating rng
-        if random_state is None:
-            rng = check_random_state(self.random_state)
-        else:
-            rng = check_random_state(random_state)
+        rng = check_random_state(self.random_state)
 
         # logic for selecting initial state
         if x_0 is None:
@@ -407,6 +459,84 @@ class UnscentedKalmanFilter(BaseEstimator):
 
         (mu_filt, sigma_filt) = self.filter(Z)
         (mu_smooth, sigma_smooth) = _augmented_unscented_smoother(
+            mu_filt, sigma_filt, self.f, self.Q
+        )
+
+        return (mu_smooth, sigma_smooth)
+
+
+class AdditiveUnscentedKalmanFilter(BaseEstimator):
+    """Implements the Unscented Kalman Filter with additive noise.
+    Observations are assumed to be generated from the following process,
+
+    .. math::
+
+        v_t       &\sim \text{Normal}(0, Q)     \\
+        w_t       &\sim \text{Normal}(0, R)     \\
+        x_{t+1}   &= f_t(x_t) + v_t             \\
+        z_{t}     &= g_t(x_t) + w_t
+
+    While less general the general-noise Unscented Kalman Filter, the Additive
+    version is more computationally efficient with complexity :math:`O(Tn^3)`
+    where :math:`T` is the number of time steps and :math:`n` is the size of
+    the state space.
+    """
+    def __init__(self, f, g, Q, R, mu_0, sigma_0, random_state=None):
+        self.f = array1d(f)
+        self.g = array1d(g)
+        self.Q = array2d(Q)
+        self.R = array2d(R)
+        self.mu_0 = array1d(mu_0)
+        self.sigma_0 = array2d(sigma_0)
+        self.random_state = random_state
+
+    def sample(self, T, x_0=None):
+        n_dim_state = self.Q.shape[-1]
+        n_dim_obs = self.R.shape[-1]
+
+        # logic for instantiating rng
+        rng = check_random_state(self.random_state)
+
+        # logic for selecting initial state
+        if x_0 is None:
+            x_0 = rng.multivariate_normal(self.mu_0, self.sigma_0)
+
+        # logic for generating samples
+        x = np.zeros((T, n_dim_state))
+        z = np.zeros((T, n_dim_obs))
+        for t in range(T):
+            if t == 0:
+                x[0] = x_0
+            else:
+                f_t1 = _last_dims(self.f, t - 1, ndims=1)[0]
+                Q_t1 = self.Q
+                e_t1 = rng.multivariate_normal(np.zeros(n_dim_state),
+                    Q_t1.newbyteorder('='))
+                x[t] = f_t1(x[t - 1]) + e_t1
+
+            g_t = _last_dims(self.g, t, ndims=1)[0]
+            R_t = self.R
+            e_t2 = rng.multivariate_normal(np.zeros(n_dim_obs),
+                R_t.newbyteorder('='))
+            z[t] = g_t(x[t]) + e_t2
+
+        return (x, ma.asarray(z))
+
+    def filter(self, Z):
+        Z = ma.asarray(Z)
+
+        (mu_filt, sigma_filt) = _additive_unscented_filter(
+            self.mu_0, self.sigma_0, self.f,
+            self.g, self.Q, self.R, Z
+        )
+
+        return (mu_filt, sigma_filt)
+
+    def smooth(self, Z):
+        Z = ma.asarray(Z)
+
+        (mu_filt, sigma_filt) = self.filter(Z)
+        (mu_smooth, sigma_smooth) = _additive_unscented_smoother(
             mu_filt, sigma_filt, self.f, self.Q
         )
 

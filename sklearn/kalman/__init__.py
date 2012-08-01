@@ -8,4 +8,4 @@ spaces.
 '''
 
 from .standard import KalmanFilter
-from .unscented import UnscentedKalmanFilter
+from .unscented import AdditiveUnscentedKalmanFilter, UnscentedKalmanFilter
